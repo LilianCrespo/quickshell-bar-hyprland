@@ -31,12 +31,13 @@ Ensure you have the following packages installed:
 - `quickshell`
 - `playerctl`
 
+```bash
 # Example on Arch Linux
 sudo pacman -S quickshell playerctl
 
 Make sure Spotify is running and exposing standard MPRIS controls.
 
-## License
+# License
 
 This project is dedicated to the public domain under The Unlicense. You are free to copy, modify, distribute, or use this code for any purpose, with or without attribution.
 
