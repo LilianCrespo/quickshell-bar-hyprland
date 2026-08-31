@@ -1,0 +1,1002 @@
+//@ pragma Env QS_NO_RELOAD_POPUP=1
+import QtQuick
+import QtQuick.Layouts
+import Quickshell
+import Quickshell.Widgets
+import Quickshell.Io
+import Quickshell.Wayland
+import Quickshell.Hyprland
+import Quickshell.Services.Mpris
+import Quickshell.Services.UPower
+import Quickshell.Services.Pipewire
+
+ShellRoot {
+    id: root
+
+    property bool barVisible: true
+
+    IpcHandler {
+        target: "bar"
+        function toggle() {
+            root.barVisible = !root.barVisible;
+        }
+    }
+
+    PanelWindow {
+        id: mainBar
+        visible: root.barVisible
+
+        anchors {
+            top: true
+            bottom: true
+            left: true
+        }
+
+        implicitWidth: 52
+        color: "transparent"
+
+        WlrLayershell.layer: WlrLayer.Top
+        WlrLayershell.namespace: "quickshell-bar"
+
+        function resolveAppIcon(rawName) {
+            if (!rawName) return "";
+            const name = rawName.toLowerCase().trim();
+
+            const iconMap = {
+                "notion": ["notion", "notion-app", "notion-desktop", "notion-snap", "notion-app-enhanced", "com.notion.Notion"],
+                "codium": ["vscodium", "codium", "codium-url-handler", "com.vscodium.codium", "code", "visual-studio-code"],
+                "vscodium": ["vscodium", "codium", "codium-url-handler", "com.vscodium.codium"],
+                "code": ["visual-studio-code", "code", "vscode", "code-oss"],
+                "teams": ["teams-for-linux", "teams", "ms-teams", "com.github.IsmaelMartinez.teams_for_linux"],
+                "dolphin": ["org.kde.dolphin", "system-file-manager", "dolphin"],
+                "firefox": ["firefox", "firefox-esr"],
+                "kitty": ["kitty", "terminal", "utilities-terminal"],
+                "vesktop": ["vesktop", "discord", "webcord", "dev.vencord.Vesktop"],
+                "discord": ["discord", "vesktop", "webcord"],
+                "zen": ["zen-browser", "zen-alpha", "zen", "zen-beta"],
+                "steam": ["steam", "steam-native", "steam-runtime", "com.valvesoftware.Steam"],
+                "spotify": ["spotify-client", "spotify", "com.spotify.Client"]
+            };
+
+            for (const key in iconMap) {
+                if (name.includes(key) || key.includes(name)) {
+                    for (const candidate of iconMap[key]) {
+                        const path = Quickshell.iconPath(candidate, true);
+                        if (path) return path;
+                    }
+                }
+            }
+
+            return Quickshell.iconPath(name, true) || "";
+        }
+
+        function getAppGlyph(clazz) {
+            const c = (clazz || "").toLowerCase();
+            if (c.includes("zen")) return "";
+            if (c.includes("firefox")) return "";
+            if (c.includes("chrome") || c.includes("chromium")) return "";
+            if (c.includes("brave")) return "";
+            if (c.includes("kitty") || c.includes("alacritty") || c.includes("foot")) return "";
+            if (c.includes("notion")) return "󰇈";
+            if (c.includes("obsidian")) return "󱓞";
+            if (c.includes("spotify")) return "";
+            if (c.includes("discord") || c.includes("vesktop") || c.includes("webcord")) return "";
+            if (c.includes("teams")) return "󰊻";
+            if (c.includes("code") || c.includes("codium")) return "󰨞";
+            if (c.includes("dolphin") || c.includes("thunar") || c.includes("nautilus")) return "󰉋";
+            if (c.includes("steam")) return "󰓓";
+            return "";
+        }
+
+        function getAppColor(clazz) {
+            const c = (clazz || "").toLowerCase();
+            if (c.includes("zen")) return "#7aa2f7";
+            if (c.includes("firefox")) return "#ff6a00";
+            if (c.includes("chrome") || c.includes("chromium")) return "#4285f4";
+            if (c.includes("brave")) return "#ff4500";
+            if (c.includes("kitty") || c.includes("alacritty") || c.includes("foot")) return "#9ece6a";
+            if (c.includes("notion")) return "#ffffff";
+            if (c.includes("obsidian")) return "#9b59b6";
+            if (c.includes("spotify")) return "#1ed760";
+            if (c.includes("discord") || c.includes("vesktop") || c.includes("webcord")) return "#5865f2";
+            if (c.includes("teams")) return "#6264a7";
+            if (c.includes("code") || c.includes("codium")) return "#007acc";
+            if (c.includes("dolphin") || c.includes("thunar") || c.includes("nautilus")) return "#f39c12";
+            if (c.includes("steam")) return "#171a21";
+            return "#565f89";
+        }
+
+        ColumnLayout {
+            anchors.fill: parent
+            anchors.margins: 4
+            spacing: 5
+
+            // ==================== LANCEUR D'APPLICATIONS ====================
+            Rectangle {
+                id: launcherBtn
+                Layout.preferredWidth: 44
+                Layout.preferredHeight: 38
+                Layout.alignment: Qt.AlignHCenter
+                radius: 10
+                color: launcherArea.containsMouse ? "#2a2e3f" : "#bf0f111a"
+                border.color: launcherArea.containsMouse ? "#7aa2f7" : "#14ffffff"
+                border.width: 1
+
+                Behavior on color { ColorAnimation { duration: 150 } }
+                Behavior on border.color { ColorAnimation { duration: 150 } }
+
+                Process { id: rofiProc; command: ["rofi", "-show", "drun"] }
+
+                MouseArea {
+                    id: launcherArea
+                    anchors.fill: parent
+                    hoverEnabled: true
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: rofiProc.running = true
+                }
+
+                Text {
+                    anchors.centerIn: parent
+                    text: "󰣇"
+                    color: launcherArea.containsMouse ? "#7dcfff" : "#7aa2f7"
+                    font.family: "JetBrainsMono Nerd Font"
+                    font.pixelSize: 18
+                }
+            }
+
+            // ==================== WORKSPACES ====================
+            ColumnLayout {
+                id: wsContainer
+                Layout.alignment: Qt.AlignTop | Qt.AlignHCenter
+                spacing: 5
+
+                property var wsAppMap: ({})
+
+                Process {
+                    id: hyprClientsProc
+                    command: ["hyprctl", "clients", "-j"]
+                    stdout: SplitParser {
+                        splitMarker: ""
+                        onRead: data => {
+                            try {
+                                const parsed = JSON.parse(data);
+                                const newMap = {};
+                                for (let i = 0; i < parsed.length; ++i) {
+                                    const c = parsed[i];
+                                    const wId = c.workspace ? c.workspace.id : null;
+                                    if (wId !== null) {
+                                        if (!newMap[wId]) newMap[wId] = [];
+                                        const cls = c.initialClass || c.class || "";
+                                        if (cls && newMap[wId].indexOf(cls) === -1) {
+                                            newMap[wId].push(cls);
+                                        }
+                                    }
+                                }
+                                wsContainer.wsAppMap = newMap;
+                            } catch (e) {}
+                        }
+                    }
+                }
+
+                Timer {
+                    interval: 1000; running: true; repeat: true
+                    onTriggered: hyprClientsProc.running = true
+                }
+
+                Component.onCompleted: hyprClientsProc.running = true
+
+                Repeater {
+                    model: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+
+                    Item {
+                        id: wsCardWrapper
+                        required property int modelData
+                        readonly property int wsId: modelData
+                        readonly property bool isActive: Hyprland.focusedWorkspace ? (Hyprland.focusedWorkspace.id === wsId) : (wsId === 1)
+                        readonly property var appList: (wsContainer.wsAppMap && wsContainer.wsAppMap[wsId]) ? wsContainer.wsAppMap[wsId] : []
+
+                        visible: isActive || (appList && appList.length > 0)
+
+                        Layout.preferredWidth: 44
+                        Layout.preferredHeight: wsContentCol.implicitHeight + (isActive ? 28 : 10)
+                        Layout.alignment: Qt.AlignHCenter
+
+                        Behavior on Layout.preferredHeight {
+                            NumberAnimation { duration: 200; easing.type: Easing.OutCubic }
+                        }
+
+                        Rectangle {
+                            id: wsCard
+                            anchors.verticalCenter: parent.verticalCenter
+                            anchors.right: parent.right
+                            anchors.rightMargin: 1
+
+                            width: wsCardWrapper.isActive ? (parent.width + 12) : 42
+                            height: parent.height
+
+                            Behavior on width {
+                                NumberAnimation { duration: 200; easing.type: Easing.OutCubic }
+                            }
+
+                            topRightRadius: wsCardWrapper.isActive ? 12 : 8
+                            bottomRightRadius: wsCardWrapper.isActive ? 12 : 8
+                            topLeftRadius: wsCardWrapper.isActive ? 0 : 8
+                            bottomLeftRadius: wsCardWrapper.isActive ? 0 : 8
+
+                            color: wsCardWrapper.isActive ? "#e60f111a" : (wsMouseArea.containsMouse ? "#d9161925" : "#bf0f111a")
+                            border.color: wsCardWrapper.isActive ? "transparent" : (wsMouseArea.containsMouse ? "#2f354a" : "#14ffffff")
+                            border.width: wsCardWrapper.isActive ? 0 : 1
+
+                            Behavior on color { ColorAnimation { duration: 150 } }
+
+                            MouseArea {
+                                id: wsMouseArea
+                                anchors.fill: parent
+                                hoverEnabled: true
+                                cursorShape: Qt.PointingHandCursor
+                                onClicked: Hyprland.dispatch("workspace " + wsCardWrapper.wsId)
+                            }
+
+                            ColumnLayout {
+                                id: wsContentCol
+                                anchors.centerIn: parent
+                                anchors.horizontalCenterOffset: wsCardWrapper.isActive ? 4 : 0
+                                spacing: 4
+
+                                Behavior on anchors.horizontalCenterOffset {
+                                    NumberAnimation { duration: 200; easing.type: Easing.OutCubic }
+                                }
+
+                                Text {
+                                    text: wsCardWrapper.wsId === 10 ? "0" : wsCardWrapper.wsId
+                                    color: wsCardWrapper.isActive ? "#7aa2f7" : "#99ffffff"
+                                    font.family: "JetBrainsMono Nerd Font"
+                                    font.bold: true
+                                    font.pixelSize: wsCardWrapper.isActive ? 13 : 11
+                                    Layout.alignment: Qt.AlignHCenter
+                                }
+
+                                Repeater {
+                                    model: wsCardWrapper.appList.slice(0, 3)
+
+                                    Item {
+                                        id: iconSlot
+                                        required property var modelData
+                                        Layout.preferredWidth: 18
+                                        Layout.preferredHeight: 18
+                                        Layout.alignment: Qt.AlignHCenter
+
+                                        readonly property string resolvedPath: mainBar.resolveAppIcon(modelData)
+
+                                        IconImage {
+                                            id: appImg
+                                            anchors.fill: parent
+                                            visible: iconSlot.resolvedPath !== ""
+                                            source: iconSlot.resolvedPath
+                                        }
+
+                                        Text {
+                                            anchors.centerIn: parent
+                                            visible: !appImg.visible || iconSlot.resolvedPath === ""
+                                            text: mainBar.getAppGlyph(iconSlot.modelData)
+                                            color: mainBar.getAppColor(iconSlot.modelData)
+                                            font.family: "JetBrainsMono Nerd Font"
+                                            font.pixelSize: 13
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            Item { Layout.fillHeight: true }
+
+            // ==================== STATS & SYSTÈME ====================
+            ColumnLayout {
+                Layout.alignment: Qt.AlignBottom | Qt.AlignHCenter
+                spacing: 4
+
+                // --- CPU ---
+                Rectangle {
+                    id: cpuCard
+                    Layout.preferredWidth: 44
+                    Layout.preferredHeight: 44
+                    radius: 10
+                    color: cpuMouse.containsMouse ? "#1f2335" : "#bf0f111a"
+                    border.color: "#14ffffff"
+
+                    property int usage: 0
+                    property var lastStat: null
+
+                    MouseArea { id: cpuMouse; anchors.fill: parent; hoverEnabled: true }
+
+                    FileView {
+                        id: cpuReader
+                        path: "/proc/stat"
+                        watchChanges: false
+                        onLoaded: {
+                            const lines = text().split("\n");
+                            if (lines.length > 0) {
+                                const parts = lines[0].trim().split(/\s+/).slice(1).map(Number);
+                                const idle = parts[3] + (parts[4] || 0);
+                                const total = parts.reduce((a, b) => a + b, 0);
+
+                                if (cpuCard.lastStat) {
+                                    const totalDiff = total - cpuCard.lastStat.total;
+                                    const idleDiff = idle - cpuCard.lastStat.idle;
+                                    if (totalDiff > 0) {
+                                        cpuCard.usage = Math.round((1 - idleDiff / totalDiff) * 100);
+                                    }
+                                }
+                                cpuCard.lastStat = { total: total, idle: idle };
+                            }
+                        }
+                    }
+
+                    Timer {
+                        interval: 2000; running: true; repeat: true
+                        onTriggered: cpuReader.reload()
+                    }
+
+                    ColumnLayout {
+                        anchors.centerIn: parent
+                        spacing: 1
+                        Text { text: ""; color: "#7aa2f7"; font.family: "JetBrainsMono Nerd Font"; font.pixelSize: 12; Layout.alignment: Qt.AlignHCenter }
+                        Text { text: cpuCard.usage + "%"; color: "#7aa2f7"; font.family: "JetBrainsMono Nerd Font"; font.bold: true; font.pixelSize: 9; Layout.alignment: Qt.AlignHCenter }
+                    }
+                }
+
+                // --- RAM ---
+                Rectangle {
+                    id: memCard
+                    Layout.preferredWidth: 44
+                    Layout.preferredHeight: 44
+                    radius: 10
+                    color: memMouse.containsMouse ? "#1f2335" : "#bf0f111a"
+                    border.color: "#14ffffff"
+
+                    property string usedMem: "0.0G"
+
+                    MouseArea { id: memMouse; anchors.fill: parent; hoverEnabled: true }
+
+                    FileView {
+                        id: memReader
+                        path: "/proc/meminfo"
+                        watchChanges: false
+                        onLoaded: {
+                            const content = text();
+                            const totalMatch = content.match(/MemTotal:\s+(\d+)\s+kB/);
+                            const benchMatch = content.match(/MemAvailable:\s+(\d+)\s+kB/);
+                            if (totalMatch && benchMatch) {
+                                const total = parseInt(totalMatch[1]);
+                                const avail = parseInt(benchMatch[1]);
+                                memCard.usedMem = ((total - avail) / 1048576).toFixed(1) + "G";
+                            }
+                        }
+                    }
+
+                    Timer {
+                        interval: 2000; running: true; repeat: true
+                        onTriggered: memReader.reload()
+                    }
+
+                    ColumnLayout {
+                        anchors.centerIn: parent
+                        spacing: 1
+                        Text { text: "󰘚"; color: "#ff9e64"; font.family: "JetBrainsMono Nerd Font"; font.pixelSize: 12; Layout.alignment: Qt.AlignHCenter }
+                        Text { text: memCard.usedMem; color: "#ff9e64"; font.family: "JetBrainsMono Nerd Font"; font.bold: true; font.pixelSize: 9; Layout.alignment: Qt.AlignHCenter }
+                    }
+                }
+
+                // --- TEMPÉRATURE ---
+                Rectangle {
+                    id: tempCard
+                    Layout.preferredWidth: 44
+                    Layout.preferredHeight: 44
+                    radius: 10
+                    color: tempMouse.containsMouse ? "#1f2335" : "#bf0f111a"
+                    border.color: "#14ffffff"
+
+                    property int tempC: 0
+
+                    MouseArea { id: tempMouse; anchors.fill: parent; hoverEnabled: true }
+
+                    FileView {
+                        id: thermalReader
+                        path: "/sys/class/thermal/thermal_zone0/temp"
+                        watchChanges: false
+                        onLoaded: {
+                            const val = parseInt(text().trim());
+                            if (!isNaN(val)) tempCard.tempC = Math.round(val / 1000);
+                        }
+                    }
+
+                    Timer {
+                        interval: 2000; running: true; repeat: true
+                        onTriggered: thermalReader.reload()
+                    }
+
+                    ColumnLayout {
+                        anchors.centerIn: parent
+                        spacing: 1
+                        Text { text: ""; color: tempCard.tempC >= 80 ? "#f7768e" : (tempCard.tempC >= 65 ? "#ff9e64" : "#73daca"); font.family: "JetBrainsMono Nerd Font"; font.pixelSize: 12; Layout.alignment: Qt.AlignHCenter }
+                        Text { text: tempCard.tempC + "°"; color: tempCard.tempC >= 80 ? "#f7768e" : (tempCard.tempC >= 65 ? "#ff9e64" : "#73daca"); font.family: "JetBrainsMono Nerd Font"; font.bold: true; font.pixelSize: 9; Layout.alignment: Qt.AlignHCenter }
+                    }
+                }
+
+                // --- LECTEUR VINYLE SPOTIFY ---
+                Rectangle {
+                    id: vinylPlayerCard
+                    Layout.preferredWidth: 44
+                    Layout.preferredHeight: 44
+                    Layout.alignment: Qt.AlignHCenter
+                    radius: 10
+                    color: vinylMouse.containsMouse ? "#1f2335" : "#bf0f111a"
+                    border.color: "#14ffffff"
+
+                    readonly property var spotifyPlayer: {
+                        const list = Mpris.players.values;
+                        for (let i = 0; i < list.length; ++i) {
+                            const p = list[i];
+                            if (p && (p.identity.toLowerCase().includes("spotify") || p.entry.toLowerCase().includes("spotify"))) {
+                                return p;
+                            }
+                        }
+                        return null;
+                    }
+
+                    readonly property bool hasSpotify: spotifyPlayer !== null
+                    readonly property bool isPlaying: hasSpotify && (spotifyPlayer.playbackState === MprisPlaybackState.Playing)
+                    readonly property string artUrl: hasSpotify ? (spotifyPlayer.trackArtUrl || "") : ""
+
+                    visible: hasSpotify
+
+                    function normalizeSec(v) {
+                        if (!v || v <= 0) return 0.0;
+                        return v > 10000 ? (v / 1000000.0) : v;
+                    }
+
+                    property real currentSec: 0.0
+                    readonly property real totalSec: (hasSpotify && normalizeSec(spotifyPlayer.length) > 0) ? normalizeSec(spotifyPlayer.length) : 180.0
+                    readonly property real trackProgress: Math.min(Math.max(currentSec / Math.max(totalSec, 1.0), 0.0), 1.0)
+
+                    Timer {
+                        interval: 1000
+                        running: vinylPlayerCard.isPlaying
+                        repeat: true
+                        onTriggered: {
+                            if (vinylPlayerCard.spotifyPlayer) {
+                                vinylPlayerCard.currentSec = vinylPlayerCard.normalizeSec(vinylPlayerCard.spotifyPlayer.position);
+                            }
+                        }
+                    }
+
+                    Connections {
+                        target: vinylPlayerCard.spotifyPlayer
+                        function onPositionChanged() {
+                            if (vinylPlayerCard.spotifyPlayer) {
+                                vinylPlayerCard.currentSec = vinylPlayerCard.normalizeSec(vinylPlayerCard.spotifyPlayer.position);
+                            }
+                        }
+                    }
+
+                    property real discAngle: 0.0
+                    property real discSpeed: 0.0
+                    property real targetSpeed: isPlaying ? 240.0 : 0.0
+
+                    FrameAnimation {
+                        running: vinylPlayerCard.hasSpotify && (vinylPlayerCard.isPlaying || vinylPlayerCard.discSpeed > 0.1)
+                        onTriggered: {
+                            const dt = frameTime;
+                            const accel = 320.0;
+                            const decel = 180.0;
+
+                            if (vinylPlayerCard.isPlaying) {
+                                if (vinylPlayerCard.discSpeed < vinylPlayerCard.targetSpeed) {
+                                    vinylPlayerCard.discSpeed = Math.min(vinylPlayerCard.targetSpeed, vinylPlayerCard.discSpeed + accel * dt);
+                                }
+                            } else {
+                                if (vinylPlayerCard.discSpeed > 0) {
+                                    vinylPlayerCard.discSpeed = Math.max(0, vinylPlayerCard.discSpeed - decel * dt);
+                                }
+                            }
+
+                            vinylPlayerCard.discAngle = (vinylPlayerCard.discAngle + vinylPlayerCard.discSpeed * dt) % 360.0;
+                        }
+                    }
+
+                    MouseArea {
+                        id: vinylMouse
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: {
+                            if (vinylPlayerCard.spotifyPlayer) {
+                                vinylPlayerCard.spotifyPlayer.togglePlaying();
+                            }
+                        }
+                        onWheel: wheel => {
+                            if (!vinylPlayerCard.spotifyPlayer) return;
+                            if (wheel.angleDelta.y > 0) vinylPlayerCard.spotifyPlayer.next();
+                            else vinylPlayerCard.spotifyPlayer.previous();
+                        }
+                    }
+
+                    Item {
+                        anchors.fill: parent
+
+                        // Disque vinyle
+                        Item {
+                            id: vinylDisc
+                            width: 38
+                            height: 38
+                            anchors.centerIn: parent
+                            rotation: vinylPlayerCard.discAngle
+
+                            Rectangle {
+                                anchors.fill: parent
+                                radius: width / 2
+                                color: "#0c0d12"
+                                border.color: "#222430"
+                                border.width: 1
+
+                                Rectangle {
+                                    anchors.centerIn: parent
+                                    width: 30; height: 30; radius: 15
+                                    color: "transparent"
+                                    border.color: "#181a24"; border.width: 1
+                                }
+                                Rectangle {
+                                    anchors.centerIn: parent
+                                    width: 22; height: 22; radius: 11
+                                    color: "transparent"
+                                    border.color: "#12ffffff"; border.width: 1
+                                }
+                            }
+
+                            // Macaron central circulaire
+                            Item {
+                                id: albumArtCircle
+                                width: 16
+                                height: 16
+                                anchors.centerIn: parent
+
+                                Image {
+                                    id: hiddenArtSource
+                                    source: vinylPlayerCard.artUrl
+                                    visible: false
+                                    onStatusChanged: {
+                                        if (status === Image.Ready) artCanvas.requestPaint();
+                                    }
+                                }
+
+                                Canvas {
+                                    id: artCanvas
+                                    anchors.fill: parent
+                                    visible: vinylPlayerCard.artUrl !== ""
+
+                                    onPaint: {
+                                        const ctx = getContext("2d");
+                                        ctx.clearRect(0, 0, width, height);
+
+                                        if (hiddenArtSource.status === Image.Ready) {
+                                            ctx.save();
+                                            ctx.beginPath();
+                                            ctx.arc(width / 2, height / 2, width / 2, 0, Math.PI * 2);
+                                            ctx.closePath();
+                                            ctx.clip();
+                                            ctx.drawImage(hiddenArtSource, 0, 0, width, height);
+                                            ctx.restore();
+                                        }
+                                    }
+                                }
+
+                                Connections {
+                                    target: vinylPlayerCard
+                                    function onArtUrlChanged() {
+                                        artCanvas.requestPaint();
+                                    }
+                                }
+
+                                Rectangle {
+                                    anchors.fill: parent
+                                    radius: width / 2
+                                    color: "#1ed760"
+                                    visible: vinylPlayerCard.artUrl === "" || hiddenArtSource.status !== Image.Ready
+
+                                    Text {
+                                        anchors.centerIn: parent
+                                        text: ""
+                                        font.family: "JetBrainsMono Nerd Font"
+                                        font.pixelSize: 9
+                                        color: "#0c0d12"
+                                    }
+                                }
+                            }
+
+                            // Broche centrale
+                            Rectangle {
+                                width: 4; height: 4; radius: 2
+                                anchors.centerIn: parent
+                                color: "#1a1b26"
+                                border.color: "#cfc9c2"
+                                border.width: 0.5
+                            }
+                        }
+
+                        // Bras de lecture asservi (Repos: -16° | Début 0%: -6° | Fin 100%: +16°)
+                        Item {
+                            id: toneArm
+                            width: 2
+                            height: 25
+                            x: 37
+                            y: 2
+
+                            transformOrigin: Item.TopRight
+
+                            // Repos: -11° | Début 0%: -7° | Fin 100%: +10.5° (au ras du macaron central)
+                            readonly property real activeAngle: -7.0 + (vinylPlayerCard.trackProgress * 17.5)
+                            rotation: (vinylPlayerCard.isPlaying || vinylPlayerCard.discSpeed > 0.1) ? activeAngle : -11.0
+                            Behavior on rotation {
+                                NumberAnimation {
+                                    duration: 500
+                                    easing.type: Easing.OutCubic
+                                }
+                            }
+
+                            Rectangle {
+                                width: 5
+                                height: 5
+                                radius: 2.5
+                                x: -1.5
+                                y: -1.5
+                                color: "#737994"
+                                border.color: "#313244"
+                                border.width: 0.5
+                            }
+
+                            Rectangle {
+                                width: 1.2
+                                height: 20
+                                x: 0.4
+                                y: 2
+                                color: "#a6adc8"
+                                radius: 0.6
+                            }
+
+                            Rectangle {
+                                width: 3.5
+                                height: 5
+                                x: -1
+                                y: 19.5
+                                radius: 0.5
+                                color: "#1e1e2e"
+                                border.color: "#585b70"
+                                border.width: 0.5
+                                rotation: 10
+                            }
+                        }
+                    }
+                }
+
+                // --- MODULE RÉSEAU (Interface KDE) ---
+                Rectangle {
+                    id: netCard
+                    Layout.preferredWidth: 44
+                    Layout.preferredHeight: 44
+                    radius: 10
+                    color: netMouse.containsMouse ? "#1f2335" : "#bf0f111a"
+                    border.color: "#14ffffff"
+
+                    property string netType: "none"
+                    property string netName: "OFF"
+
+                    Process {
+                        id: netStatusProc
+                        command: ["sh", "-c", "nmcli -t -f TYPE,STATE,CONNECTION dev | awk -F: '$2==\"connected\" {print $1\":\"$3; exit}'"]
+                        stdout: SplitParser {
+                            onRead: data => {
+                                const raw = data.trim();
+                                if (!raw) {
+                                    netCard.netType = "none";
+                                    netCard.netName = "OFF";
+                                    return;
+                                }
+                                const parts = raw.split(":");
+                                const type = parts[0];
+                                const conn = parts.slice(1).join(":");
+                                if (type.includes("wifi") || type.includes("wireless")) {
+                                    netCard.netType = "wifi";
+                                    netCard.netName = conn.length > 4 ? conn.substring(0, 4) : conn;
+                                } else if (type.includes("ethernet")) {
+                                    netCard.netType = "ethernet";
+                                    netCard.netName = "ETH";
+                                } else {
+                                    netCard.netType = "other";
+                                    netCard.netName = "ON";
+                                }
+                            }
+                        }
+                    }
+
+                    Timer {
+                        interval: 3000; running: true; repeat: true
+                        onTriggered: netStatusProc.running = true
+                    }
+
+                    Component.onCompleted: netStatusProc.running = true
+
+                    Process {
+                        id: kdeNetProc
+                        command: ["sh", "-c", "kcmshell6 kcm_networkmanagement 2>/dev/null || kcmshell5 kcm_networkmanagement 2>/dev/null || plasmawindowed org.kde.plasma.networkmanagement 2>/dev/null || nm-connection-editor 2>/dev/null || kitty -e nmtui"]
+                    }
+
+                    MouseArea {
+                        id: netMouse
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: kdeNetProc.running = true
+                    }
+
+                    ColumnLayout {
+                        anchors.centerIn: parent
+                        spacing: 1
+                        Text {
+                            text: netCard.netType === "wifi" ? "󰤨" : (netCard.netType === "ethernet" ? "󰈀" : "󰤮")
+                            color: netCard.netType === "none" ? "#f7768e" : "#7aa2f7"
+                            font.family: "JetBrainsMono Nerd Font"
+                            font.pixelSize: 13
+                            Layout.alignment: Qt.AlignHCenter
+                        }
+                        Text {
+                            text: netCard.netName
+                            color: netCard.netType === "none" ? "#f7768e" : "#7aa2f7"
+                            font.family: "JetBrainsMono Nerd Font"
+                            font.bold: true
+                            font.pixelSize: 8
+                            Layout.alignment: Qt.AlignHCenter
+                        }
+                    }
+                }
+
+                // --- MODULE AUDIO / VOLUME (Natif PipeWire - Réactivité 0ms) ---
+                Rectangle {
+                    id: audioCard
+                    Layout.preferredWidth: 44
+                    Layout.preferredHeight: 44
+                    radius: 10
+                    color: audioMouse.containsMouse ? "#1f2335" : "#bf0f111a"
+                    border.color: "#14ffffff"
+
+                    readonly property var sink: Pipewire.defaultAudioSink
+                    readonly property var audio: sink ? sink.audio : null
+
+                    PwObjectTracker {
+                        objects: [ audioCard.sink ]
+                    }
+
+                    readonly property int volume: audio ? Math.round(audio.volume * 100) : 0
+                    readonly property bool isMuted: audio ? audio.muted : false
+
+                    MouseArea {
+                        id: audioMouse
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: {
+                            if (audioCard.audio) {
+                                audioCard.audio.muted = !audioCard.audio.muted;
+                            }
+                        }
+                        onWheel: wheel => {
+                            if (!audioCard.audio) return;
+                            const step = wheel.angleDelta.y > 0 ? 0.05 : -0.05;
+                            audioCard.audio.volume = Math.min(1.0, Math.max(0.0, audioCard.audio.volume + step));
+                            audioCard.audio.muted = false;
+                        }
+                    }
+
+                    ColumnLayout {
+                        anchors.centerIn: parent
+                        spacing: 1
+                        Text {
+                            text: audioCard.isMuted ? "󰝟" : (audioCard.volume >= 50 ? "󰕾" : (audioCard.volume > 0 ? "󰖀" : "󰕿"))
+                            color: audioCard.isMuted ? "#f7768e" : "#7dcfff"
+                            font.family: "JetBrainsMono Nerd Font"
+                            font.pixelSize: 13
+                            Layout.alignment: Qt.AlignHCenter
+                        }
+                        Text {
+                            text: audioCard.isMuted ? "MUT" : audioCard.volume + "%"
+                            color: audioCard.isMuted ? "#f7768e" : "#7dcfff"
+                            font.family: "JetBrainsMono Nerd Font"
+                            font.bold: true
+                            font.pixelSize: 9
+                            Layout.alignment: Qt.AlignHCenter
+                        }
+                    }
+                }
+
+                // --- PROFIL D'ALIMENTATION ---
+                Rectangle {
+                    id: powerCard
+                    Layout.preferredWidth: 44
+                    Layout.preferredHeight: 44
+                    radius: 10
+                    color: pwrMouse.containsMouse ? "#1f2335" : "#bf0f111a"
+                    border.color: "#14ffffff"
+
+                    property string profile: "balanced"
+
+                    MouseArea {
+                        id: pwrMouse
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: {
+                            let next = "balanced";
+                            if (powerCard.profile === "performance") next = "power-saver";
+                            else if (powerCard.profile === "power-saver") next = "balanced";
+                            else next = "performance";
+
+                            setProfileProc.command = ["powerprofilesctl", "set", next];
+                            setProfileProc.running = true;
+                            powerCard.profile = next;
+                        }
+                    }
+
+                    Process {
+                        id: getProfileProc
+                        command: ["powerprofilesctl", "get"]
+                        stdout: SplitParser {
+                            onRead: data => {
+                                const p = data.trim();
+                                if (p.length > 0) powerCard.profile = p;
+                            }
+                        }
+                    }
+
+                    Process { id: setProfileProc }
+
+                    Timer {
+                        interval: 3000; running: true; repeat: true
+                        onTriggered: getProfileProc.running = true
+                    }
+
+                    Component.onCompleted: getProfileProc.running = true
+
+                    ColumnLayout {
+                        anchors.centerIn: parent
+                        spacing: 1
+                        Text {
+                            text: powerCard.profile === "performance" ? "" : (powerCard.profile === "power-saver" ? "" : "")
+                            color: powerCard.profile === "performance" ? "#bb9af7" : (powerCard.profile === "power-saver" ? "#9ece6a" : "#7dcfff")
+                            font.family: "JetBrainsMono Nerd Font"
+                            font.pixelSize: 12
+                            Layout.alignment: Qt.AlignHCenter
+                        }
+                        Text {
+                            text: powerCard.profile === "performance" ? "PERF" : (powerCard.profile === "power-saver" ? "ECO" : "BAL")
+                            color: powerCard.profile === "performance" ? "#bb9af7" : (powerCard.profile === "power-saver" ? "#9ece6a" : "#7dcfff")
+                            font.family: "JetBrainsMono Nerd Font"
+                            font.bold: true
+                            font.pixelSize: 8
+                            Layout.alignment: Qt.AlignHCenter
+                        }
+                    }
+                }
+
+                // --- BATTERIE (Autonomie estimée au survol) ---
+                Rectangle {
+                    id: batteryCard
+                    visible: UPower.displayDevice.isPresent
+                    Layout.preferredWidth: 44
+                    Layout.preferredHeight: 44
+                    radius: 10
+                    color: batMouse.containsMouse ? "#1f2335" : "#bf0f111a"
+                    border.color: "#14ffffff"
+
+                    readonly property var device: UPower.displayDevice
+                    readonly property int percentage: Math.round(device.percentage * 100)
+                    readonly property bool isCharging: device.state === UPowerDeviceState.Charging
+
+                    function getRemainingTime() {
+                        const sec = isCharging ? device.timeToFull : device.timeToEmpty;
+                        if (!sec || sec <= 0) return isCharging ? "CHARG" : (percentage + "%");
+                        const h = Math.floor(sec / 3600);
+                        const m = Math.floor((sec % 3600) / 60);
+                        if (h > 0) return h + "h" + (m < 10 ? "0" : "") + m;
+                        return m + "m";
+                    }
+
+                    MouseArea {
+                        id: batMouse
+                        anchors.fill: parent
+                        hoverEnabled: true
+                    }
+
+                    function getBatteryIcon() {
+                        const icons = ["󰂎", "󰁺", "󰁼", "󰁾", "󰂀", "󰂂", "󰁹"];
+                        const idx = Math.min(Math.floor(percentage / 15), 6);
+                        return icons[idx];
+                    }
+
+                    ColumnLayout {
+                        anchors.centerIn: parent
+                        spacing: 1
+                        Text {
+                            text: batteryCard.getBatteryIcon()
+                            color: batteryCard.percentage <= 15 ? "#f7768e" : "#9ece6a"
+                            font.family: "JetBrainsMono Nerd Font"
+                            font.pixelSize: 13
+                            Layout.alignment: Qt.AlignHCenter
+                        }
+                        Text {
+                            text: batMouse.containsMouse ? batteryCard.getRemainingTime() : (batteryCard.isCharging ? "" : batteryCard.percentage + "%")
+                            color: batteryCard.percentage <= 15 ? "#f7768e" : "#9ece6a"
+                            font.family: "JetBrainsMono Nerd Font"
+                            font.bold: true
+                            font.pixelSize: batMouse.containsMouse ? 8 : 9
+                            Layout.alignment: Qt.AlignHCenter
+                        }
+                    }
+                }
+
+                // --- HORLOGE & DATE ---
+                Rectangle {
+                    id: clockCard
+                    Layout.preferredWidth: 44
+                    Layout.preferredHeight: 44
+                    radius: 10
+                    color: clockMouse.containsMouse ? "#1f2335" : "#bf0f111a"
+                    border.color: "#14ffffff"
+
+                    property bool showDate: false
+
+                    MouseArea {
+                        id: clockMouse
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: clockCard.showDate = !clockCard.showDate
+                    }
+
+                    Timer {
+                        interval: 1000; running: true; repeat: true
+                        onTriggered: {
+                            const d = new Date();
+                            line1.text = clockCard.showDate ? Qt.formatDateTime(d, "dd") : Qt.formatDateTime(d, "hh");
+                            line2.text = clockCard.showDate ? Qt.formatDateTime(d, "MM") : Qt.formatDateTime(d, "mm");
+                        }
+                    }
+
+                    ColumnLayout {
+                        anchors.centerIn: parent
+                        spacing: 0
+                        Text {
+                            id: line1
+                            text: clockCard.showDate ? Qt.formatDateTime(new Date(), "dd") : Qt.formatDateTime(new Date(), "hh")
+                            color: clockCard.showDate ? "#bb9af7" : "#ffffff"
+                            font.family: "JetBrainsMono Nerd Font"
+                            font.bold: true
+                            font.pixelSize: 11
+                            Layout.alignment: Qt.AlignHCenter
+                        }
+                        Text {
+                            id: line2
+                            text: clockCard.showDate ? Qt.formatDateTime(new Date(), "MM") : Qt.formatDateTime(new Date(), "mm")
+                            color: clockCard.showDate ? "#bb9af7" : "#ffffff"
+                            font.family: "JetBrainsMono Nerd Font"
+                            font.bold: true
+                            font.pixelSize: 11
+                            Layout.alignment: Qt.AlignHCenter
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
