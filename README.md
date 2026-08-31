@@ -33,7 +33,7 @@ Ensure you have the following packages installed:
 
 ```bash
 # Example on Arch Linux
-sudo pacman -S quickshell playerctl
+sudo pacman -S quickshell playerctl```
 
 Make sure Spotify is running and exposing standard MPRIS controls.
 
